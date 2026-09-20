@@ -265,7 +265,7 @@
 
   .foot-right { margin-left: auto; display: inline-flex; align-items: center; gap: 18px; }
   #stats { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--ink-faint); letter-spacing: 1px; }
-  #clearBtn, #advBtn {
+  #clearBtn, #advBtn, #exportBtn {
     background: none; border: none;
     font-size: 12px; letter-spacing: 2px;
     color: var(--ink-soft);
@@ -273,7 +273,31 @@
     padding: 2px 0;
     border-bottom: 1px solid transparent;
   }
-  #clearBtn:hover, #advBtn:hover { border-bottom-color: var(--ink-soft); }
+  #clearBtn:hover, #advBtn:hover, #exportBtn:hover { border-bottom-color: var(--ink-soft); }
+
+  /* 导出菜单 */
+  #exportMenu {
+    position: fixed;
+    z-index: 30;
+    display: none;
+    width: 236px;
+    background: var(--paper);
+    border: 1px solid var(--ink);
+    border-radius: 3px;
+    box-shadow: 4px 4px 0 rgba(28, 26, 23, .14);
+    padding: 6px;
+  }
+  #exportMenu .ex-item {
+    font-size: 13px;
+    color: var(--ink);
+    padding: 9px 12px;
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  #exportMenu .ex-item:hover { background: var(--paper-deep); }
+  #exportMenu .ex-item .note { font-size: 11px; color: var(--ink-faint); letter-spacing: 1px; margin-left: 6px; }
+  #exportMenu .ex-item .demo { font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
+  #exportMenu .ex-item .demo b { color: var(--vermilion); font-weight: 700; }
 
   /* 高级设置（默认收起） */
   #advPanel {
@@ -530,6 +554,7 @@
     <span id="annoState">标注未启用</span>
     <span id="stats">0 字 · 延迟 -</span>
     <button id="advBtn">设置</button>
+    <button id="exportBtn">导出</button>
     <button id="clearBtn">翻页</button>
   </span>
 
@@ -1285,6 +1310,111 @@ const wave = {
   },
 };
 wave.init();
+
+// ================= Markdown 导出 =================
+// 两种模式：plain（纯文稿）与 annotated（带标注：**加粗**=重点、彩色（情绪名）、〔〕=意图）
+const exportMenu = document.createElement("div");
+exportMenu.id = "exportMenu";
+exportMenu.innerHTML =
+  `<div class="ex-item" data-mode="plain">Markdown<span class="note">默认</span><div class="demo">纯文稿，无标注</div></div>` +
+  `<div class="ex-item" data-mode="anno">Markdown · 带标注<div class="demo"><b>加粗</b>＝重点（焦虑）＝情绪 〔问〕＝意图</div></div>`;
+document.body.appendChild(exportMenu);
+
+$("exportBtn").onclick = e => {
+  e.stopPropagation();
+  const r = $("exportBtn").getBoundingClientRect();
+  const m = exportMenu;
+  m.style.display = "block";
+  m.style.left = Math.max(10, Math.min(r.left, innerWidth - 250)) + "px";
+  m.style.top = Math.max(10, r.top - m.offsetHeight - 8) + "px";
+};
+document.addEventListener("click", ev => {
+  if (!ev.target.closest("#exportMenu") && !ev.target.closest("#exportBtn")) exportMenu.style.display = "none";
+});
+exportMenu.querySelectorAll(".ex-item").forEach(item => {
+  item.onclick = () => { exportMenu.style.display = "none"; exportMD(item.dataset.mode === "anno"); };
+});
+
+function groupParas() {   // 按屏幕上的段落（p.seg）还原分组
+  const paras = [];
+  let cur = [], lastParent = null;
+  sentences.forEach(s => {
+    const p = s.el && s.el.parentNode;
+    if (p !== lastParent && cur.length) { paras.push(cur); cur = []; }
+    if (s.el && s.el.isConnected) cur.push(s);
+    lastParent = p;
+  });
+  if (cur.length) paras.push(cur);
+  return paras;
+}
+function annoOf(s) {      // 与 applyAnno 相同的阈值逻辑，导出用
+  const a = s.anno || (s.el && s.el._anno ? s.el._anno.a : null);
+  if (!a) return null;
+  const out = {};
+  out.key = a.key != null && a.key >= TH_KEY;
+  const emo = a.emo ? emoByName(a.emo) : null;
+  out.emo = emo && !emo.neverTag && (a.emoConf ?? 1) >= TH_CONF ? emo : null;
+  const it = a.intent ? intentByName(a.intent) : null;
+  out.seal = null;
+  if (it && !it.hide && (a.intentConf ?? 1) >= INTENT_CONF_TH &&
+      (a.margin == null || a.margin >= INTENT_MARGIN_TH)) {
+    const noulTh = it.strict ? INTENT_STRICT_TH : INTENT_NOUL_TH;
+    if (a.chk == null || a.chk >= noulTh) out.seal = it;
+  }
+  return out;
+}
+function exportStamp() {
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function exportMD(annotated) {
+  if (!sentences.length && !pendingBuf.trim()) { toast("还没有可导出的内容"); return; }
+  const paras = groupParas();
+  const langText = $("langSel").selectedOptions ? $("langSel").selectedOptions[0].text : "";
+  const lines = [];
+  lines.push(`# 听写纸 · 实时字幕${annotated ? "（带标注）" : ""}`, "");
+  lines.push(`> ${exportStamp()} · 共 ${totalChars} 字 · 语言：${langText}`);
+  if (annotated) lines.push(`> 标注图例：**加粗**＝重点 ·（情绪名，带色）＝情绪 ·〔〕＝意图`);
+  lines.push("", "---", "");
+
+  if (annotated) {
+    const stats = { key: 0, emo: {}, intent: {} };
+    sentences.forEach(s => {
+      const d = annoOf(s);
+      if (!d) return;
+      if (d.key) stats.key++;
+      if (d.emo) stats.emo[d.emo.name] = (stats.emo[d.emo.name] || 0) + 1;
+      if (d.seal) stats.intent[d.seal.name] = (stats.intent[d.seal.name] || 0) + 1;
+    });
+    const emoStr = Object.entries(stats.emo).map(([k, v]) => `${k}×${v}`).join("、");
+    const itStr = Object.entries(stats.intent).map(([k, v]) => `〔${k}〕×${v}`).join("、");
+    lines.push(`**摘要**：重点 ${stats.key} 句${emoStr ? "；情绪 " + emoStr : ""}${itStr ? "；意图 " + itStr : ""}`, "", "---", "");
+    paras.forEach(para => {
+      const seg = para.map(s => {
+        const d = annoOf(s);
+        let t = s.text;
+        if (d && d.key) t = `**${t}**`;
+        if (d && d.emo) t += `<span style="color:${d.emo.color}">（${d.emo.name}）</span>`;
+        if (d && d.seal) t += `〔${d.seal.name}〕`;
+        return t;
+      }).join("");
+      lines.push(seg, "");
+    });
+  } else {
+    paras.forEach(p => lines.push(p.map(s => s.text).join(""), ""));
+  }
+  const rest = pendingBuf.trim();
+  if (rest) lines.push(rest, "");
+
+  const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+  const a = document.createElement("a");
+  const d = new Date(), p = n => String(n).padStart(2, "0");
+  a.href = URL.createObjectURL(blob);
+  a.download = `听写纸_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${annotated ? "_标注" : ""}.md`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast(annotated ? "已导出带标注的 Markdown" : "已导出 Markdown");
+}
 
 // ================= 主会话 =================
 let session = null;
