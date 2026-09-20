@@ -1,0 +1,19 @@
+# 个人内容与产物（不开源）
+口播稿.md
+小红书素材.md
+xhs/
+*.png
+
+# 历史部署文件（已被 web/ server/ 取代，仅根目录）
+/index.html
+/server_6008.py
+
+# Python
+__pycache__/
+*.pyc
+
+# 系统 / 编辑器
+.DS_Store
+*.log
+.idea/
+.vscode/

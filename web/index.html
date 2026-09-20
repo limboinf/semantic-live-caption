@@ -1,0 +1,1421 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>听写纸 · 实时字幕</title>
+<style>
+  :root {
+    --paper: #FBFAF6;
+    --paper-deep: #F4F2EB;
+    --ink: #1C1A17;
+    --ink-soft: #6E6A61;
+    --ink-faint: #A8A49A;
+    --hairline: #E4E1D8;
+    --vermilion: #C0361C;      /* 朱砂：录音 / 重点线 */
+    /* 情绪墨色（纸上的彩色墨水） */
+    --emo-angry: #B3261E;
+    --emo-anxious: #8A6410;
+    --emo-sad: #2F5493;
+    --emo-happy: #34703F;
+    --emo-surprised: #674293;
+    --serif: "Songti SC", "STSong", "Noto Serif CJK SC", "Source Han Serif SC", "SimSun", serif;
+    --sans: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    --kai: "Kaiti SC", "STKaiti", "KaiTi", "Songti SC", serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    display: flex;
+    flex-direction: column;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ---------- 页眉：一行字 + 细线 ---------- */
+  header {
+    padding: 22px 40px 14px;
+    border-bottom: 1px solid var(--hairline);
+  }
+  .masthead { display: flex; align-items: baseline; gap: 14px; }
+  .masthead .mark {
+    font-family: var(--kai);
+    font-size: 21px;
+    letter-spacing: 4px;
+  }
+  .masthead .mark em {
+    font-style: normal;
+    color: var(--vermilion);
+  }
+  .masthead .sub {
+    font-size: 11px;
+    letter-spacing: 2px;
+    color: var(--ink-faint);
+    text-transform: uppercase;
+  }
+  #statusText {
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--ink-soft);
+    letter-spacing: 1px;
+  }
+  #statusText.rec { color: var(--vermilion); }
+  #statusText.rec::before {
+    content: "";
+    display: inline-block;
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--vermilion);
+    margin-right: 7px;
+    vertical-align: 1px;
+    animation: breathe 1.6s ease-in-out infinite;
+  }
+  @keyframes breathe { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+  /* ---------- 音波 ---------- */
+  .wave-wrap {
+    display: grid;
+    grid-template-rows: 0fr;
+    transition: grid-template-rows .5s cubic-bezier(.22,1,.36,1);
+    border-bottom: 1px solid var(--hairline);
+  }
+  .wave-wrap.on { grid-template-rows: 84fr; }
+  .wave-wrap > div { overflow: hidden; }
+  #waveCanvas { display: block; width: 100%; height: 84px; }
+
+  /* ---------- 主文区：速记稿 ---------- */
+  main {
+    flex: 1;
+    overflow-y: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 30px 40px 14px;
+    min-height: 0;
+  }
+  #captions {
+    flex: 1;
+    overflow-y: auto;
+    font-family: var(--serif);
+    font-size: clamp(21px, 2.5vw, 28px);
+    line-height: 2.35;
+    letter-spacing: .02em;
+    min-height: 0;
+    padding: 54px 6px 30px 0;   /* 顶部留出首行情绪注的空间 */
+    scrollbar-width: thin;
+    scrollbar-color: var(--hairline) transparent;
+  }
+  #captions::-webkit-scrollbar { width: 5px; }
+  #captions::-webkit-scrollbar-thumb { background: var(--hairline); }
+
+  #captions .empty {
+    color: var(--ink-faint);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 2;
+    max-width: 520px;
+    padding-top: 8vh;
+  }
+  #captions .empty .big {
+    font-family: var(--kai);
+    font-size: 22px;
+    color: var(--ink-soft);
+    letter-spacing: 2px;
+    display: block;
+    margin-bottom: 14px;
+  }
+
+  p.seg { text-indent: 2em; margin-bottom: .35em; }
+
+  span.sentence {
+    position: relative;
+    border-radius: 2px;
+    transition: background .25s;
+  }
+  span.tail { color: var(--ink-faint); }
+
+  /* 重点：加粗 + 手绘波浪线 + 马克笔底色 */
+  span.sentence.key {
+    font-weight: 700;
+    padding-bottom: 6px;
+    background-image:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='30' height='7' viewBox='0 0 30 7'%3E%3Cpath d='M1.5 4.6 C5 1.8, 9 5.6, 14 3.4 S23 1.6, 28.5 3.8' fill='none' stroke='%23C0361C' stroke-width='1.7' stroke-linecap='round'/%3E%3C/svg%3E"),
+      linear-gradient(to top, rgba(192, 54, 28, 0.16) 48%, transparent 48%);
+    background-repeat: repeat-x, no-repeat;
+    background-position: left bottom, left top;
+    background-size: 30px 7px, 100% 100%;
+  }
+
+  /* 情绪：句子上方的楷体小注 */
+  .emo-tag {
+    position: absolute;
+    top: -1.35em;
+    left: .1em;
+    font-family: var(--kai);
+    font-size: 13px;
+    letter-spacing: 2px;
+    line-height: 1;
+    padding-bottom: 3px;
+    transform: rotate(-1.5deg);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .emo-tag::after {
+    content: "﹏";
+    position: absolute;
+    left: 0; bottom: -4px;
+    font-size: 10px;
+    opacity: .65;
+    letter-spacing: 0;
+  }
+  .emo-angry.emo-tag, .emo-angry .emo-tag { color: var(--emo-angry); }
+  .emo-anxious.emo-tag, .emo-anxious .emo-tag { color: var(--emo-anxious); }
+  .emo-sad.emo-tag, .emo-sad .emo-tag { color: var(--emo-sad); }
+  .emo-happy.emo-tag, .emo-happy .emo-tag { color: var(--emo-happy); }
+  .emo-surprised.emo-tag, .emo-surprised .emo-tag { color: var(--emo-surprised); }
+
+  /* 意图：印章式小签 */
+  .intent-seal {
+    font-family: var(--kai);
+    font-size: 14px;
+    letter-spacing: 1px;
+    margin-left: 5px;
+    color: var(--ink-soft);
+    vertical-align: 2px;
+  }
+
+  /* ---------- 底部控制条 ---------- */
+  footer {
+    border-top: 1px solid var(--hairline);
+    padding: 16px 40px;
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    flex-wrap: wrap;
+  }
+  #micBtn {
+    display: inline-flex;
+    align-items: center;
+    gap: 13px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    color: var(--ink);
+    font-family: var(--sans);
+  }
+  #micBtn .disc {
+    width: 46px; height: 46px;
+    border-radius: 50%;
+    border: 2px solid var(--ink);
+    display: grid;
+    place-items: center;
+    transition: all .2s;
+  }
+  #micBtn .disc i {
+    width: 16px; height: 16px;
+    border-radius: 50%;
+    background: var(--vermilion);
+    transition: all .2s;
+  }
+  #micBtn:hover .disc { transform: scale(1.05); }
+  #micBtn.rec .disc { background: var(--vermilion); border-color: var(--vermilion); }
+  #micBtn.rec .disc i { background: var(--paper); border-radius: 2px; width: 14px; height: 14px; }
+  #micBtn .label { font-size: 15px; letter-spacing: 3px; }
+
+  .foot-item { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-soft); }
+  .foot-item select, .foot-item input[type=password] {
+    appearance: none;
+    -webkit-appearance: none;
+    background: none;
+    border: none;
+    border-bottom: 1px solid var(--hairline);
+    color: var(--ink);
+    font-size: 12.5px;
+    padding: 3px 2px;
+    outline: none;
+    font-family: var(--sans);
+  }
+  .foot-item input[type=password] { width: 190px; }
+  .foot-item select:focus, .foot-item input:focus { border-bottom-color: var(--ink); }
+
+  .toggle { cursor: pointer; user-select: none; white-space: nowrap; }
+  .toggle .box {
+    display: inline-block;
+    width: 15px; height: 15px;
+    border: 1.5px solid var(--ink-faint);
+    border-radius: 3px;
+    margin-right: 7px;
+    vertical-align: -2px;
+    position: relative;
+  }
+  .toggle.on .box { background: var(--ink); border-color: var(--ink); }
+  .toggle.on .box::after {
+    content: "";
+    position: absolute;
+    left: 4px; top: 1px;
+    width: 4px; height: 8px;
+    border: solid var(--paper);
+    border-width: 0 2px 2px 0;
+    transform: rotate(42deg);
+  }
+
+  #annoState { font-size: 12px; color: var(--ink-faint); letter-spacing: 1px; }
+  #annoState.err { color: var(--vermilion); }
+
+  .foot-right { margin-left: auto; display: inline-flex; align-items: center; gap: 18px; }
+  #stats { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--ink-faint); letter-spacing: 1px; }
+  #clearBtn, #advBtn {
+    background: none; border: none;
+    font-size: 12px; letter-spacing: 2px;
+    color: var(--ink-soft);
+    cursor: pointer;
+    padding: 2px 0;
+    border-bottom: 1px solid transparent;
+  }
+  #clearBtn:hover, #advBtn:hover { border-bottom-color: var(--ink-soft); }
+
+  /* 高级设置（默认收起） */
+  #advPanel {
+    display: none;
+    width: 100%;
+    padding-top: 12px;
+    border-top: 1px dashed var(--hairline);
+    font-size: 12.5px;
+    color: var(--ink-soft);
+  }
+  #advPanel.open { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; }
+  #advPanel input[type=text] {
+    background: none; border: none;
+    border-bottom: 1px solid var(--hairline);
+    color: var(--ink-soft);
+    font-size: 12px; padding: 3px 2px;
+    outline: none; width: 320px;
+    font-family: var(--sans);
+  }
+
+  /* 图例（极简一行小字） */
+  .legend {
+    width: 100%;
+    padding-top: 10px;
+    font-size: 11.5px;
+    color: var(--ink-faint);
+    letter-spacing: 1px;
+    display: flex;
+    gap: 18px;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .legend .kai { font-family: var(--kai); }
+  .legend .u-hand {
+    background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='30' height='7' viewBox='0 0 30 7'%3E%3Cpath d='M1.5 4.6 C5 1.8, 9 5.6, 14 3.4 S23 1.6, 28.5 3.8' fill='none' stroke='%23C0361C' stroke-width='1.7' stroke-linecap='round'/%3E%3C/svg%3E") repeat-x left bottom;
+    padding-bottom: 4px;
+    font-weight: 700;
+    color: var(--ink);
+  }
+
+  /* 自定义标注配置 */
+  .cfg-group {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  .cfg-label { font-family: var(--kai); font-size: 13px; color: var(--ink-soft); letter-spacing: 2px; min-width: 2.5em; }
+  .cfg-tags { display: inline-flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .cfg-tag {
+    font-family: var(--kai);
+    font-size: 13px;
+    letter-spacing: 1px;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+  }
+  .cfg-tag .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .cfg-tag .rm {
+    cursor: pointer;
+    color: var(--ink-faint);
+    font-family: var(--sans);
+    font-size: 11px;
+    padding: 0 1px;
+  }
+  .cfg-tag .rm:hover { color: var(--vermilion); }
+  .cfg-tag.editable { cursor: pointer; padding: 1px 2px; border-bottom: 1px dotted transparent; }
+  .cfg-tag.editable:hover { border-bottom-color: var(--ink-faint); }
+
+  /* 标签编辑卡 */
+  #cfgEditor {
+    position: fixed;
+    z-index: 30;
+    display: none;
+    width: 300px;
+    background: var(--paper);
+    border: 1px solid var(--ink);
+    border-radius: 3px;
+    box-shadow: 4px 4px 0 rgba(28, 26, 23, .14);
+    padding: 13px 15px 14px;
+    font-family: var(--sans);
+  }
+  #cfgEditor .ed-title { font-family: var(--kai); font-size: 13px; letter-spacing: 2px; color: var(--ink-soft); margin-bottom: 9px; }
+  #cfgEditor .ed-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--ink-soft); margin-top: 7px; }
+  #cfgEditor .ed-row input[type=text] {
+    flex: 1;
+    background: none; border: none;
+    border-bottom: 1px solid var(--hairline);
+    color: var(--ink); font-size: 12.5px; padding: 3px 2px; outline: none;
+    font-family: var(--sans);
+  }
+  #cfgEditor .ed-row input[type=text]:focus { border-bottom-color: var(--ink); }
+  #cfgEditor .ed-row.desc input[type=text] { font-size: 11.5px; }
+  #cfgEditor input[type=color] {
+    appearance: none; -webkit-appearance: none;
+    width: 34px; height: 22px;
+    border: 1px solid var(--hairline);
+    border-radius: 3px; padding: 0; background: none; cursor: pointer;
+  }
+  #cfgEditor input[type=color]::-webkit-color-swatch-wrapper { padding: 1px; }
+  #cfgEditor input[type=color]::-webkit-color-swatch { border: none; border-radius: 2px; }
+  #cfgEditor .ed-flag { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--ink-soft); margin-top: 8px; cursor: pointer; }
+  #cfgEditor .ed-btns { display: flex; justify-content: space-between; margin-top: 13px; }
+  #cfgEditor .ed-btns button {
+    font-family: var(--sans); font-size: 12px; letter-spacing: 2px;
+    background: none; border: 1px solid var(--ink); border-radius: 2px;
+    padding: 4px 14px; cursor: pointer; color: var(--ink);
+  }
+  #cfgEditor .ed-btns button.danger { border-color: var(--hairline); color: var(--ink-faint); }
+  #cfgEditor .ed-btns button.danger:hover { border-color: var(--vermilion); color: var(--vermilion); }
+  #cfgEditor .ed-btns button.primary:hover { background: var(--ink); color: var(--paper); }
+  .cfg-add {
+    background: none;
+    border: none;
+    border-bottom: 1px dashed var(--hairline);
+    color: var(--ink-soft);
+    font-size: 12px;
+    font-family: var(--sans);
+    padding: 3px 2px;
+    outline: none;
+    width: 240px;
+  }
+  .cfg-add:focus { border-bottom-color: var(--ink); }
+
+  /* 标签发现建议卡 */
+  #suggestBox {
+    position: fixed;
+    right: 26px; bottom: 118px;
+    display: flex; flex-direction: column; gap: 10px;
+    z-index: 15; width: 280px;
+  }
+  .sg-card {
+    background: var(--paper);
+    border: 1px solid var(--ink);
+    border-radius: 3px;
+    box-shadow: 3px 3px 0 rgba(28, 26, 23, .14);
+    padding: 12px 14px;
+    animation: sgIn .35s cubic-bezier(.22, 1, .36, 1);
+  }
+  @keyframes sgIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  .sg-kind { font-size: 11px; color: var(--vermilion); letter-spacing: 2px; font-family: var(--kai); }
+  .sg-name { font-family: var(--kai); font-size: 20px; margin: 4px 0 2px; }
+  .sg-desc { font-size: 11px; color: var(--ink-soft); line-height: 1.5; max-height: 3.2em; overflow: hidden; }
+  .sg-btns { display: flex; gap: 10px; margin-top: 9px; }
+  .sg-btns button {
+    font-family: var(--sans); font-size: 12px; letter-spacing: 2px;
+    background: none; border: 1px solid var(--ink); border-radius: 2px;
+    padding: 3px 12px; cursor: pointer; color: var(--ink);
+  }
+  .sg-btns button.ok:hover { background: var(--ink); color: var(--paper); }
+  .sg-btns button.no { border-color: var(--hairline); color: var(--ink-faint); }
+  .sg-btns button.no:hover { border-color: var(--vermilion); color: var(--vermilion); }
+
+  #toast {
+    position: fixed;
+    bottom: 96px; left: 50%;
+    transform: translateX(-50%);
+    background: var(--ink);
+    color: var(--paper);
+    padding: 9px 20px;
+    font-size: 13px;
+    letter-spacing: 1px;
+    border-radius: 2px;
+    display: none;
+    z-index: 10;
+    max-width: 80vw;
+  }
+
+  /* 悬浮数值卡片 */
+  #annoTip {
+    position: fixed;
+    z-index: 20;
+    display: none;
+    background: var(--paper);
+    border: 1px solid var(--ink);
+    border-radius: 3px;
+    box-shadow: 3px 3px 0 rgba(28, 26, 23, .12);
+    padding: 10px 14px 11px;
+    font-family: var(--sans);
+    font-size: 12px;
+    color: var(--ink);
+    min-width: 190px;
+    pointer-events: none;
+  }
+  #annoTip .tt-kind {
+    font-family: var(--kai);
+    font-size: 11px;
+    color: var(--ink-faint);
+    letter-spacing: 2px;
+    margin-bottom: 6px;
+  }
+  #annoTip .tt-row { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+  #annoTip .tt-row .lb { width: 3em; color: var(--ink-soft); letter-spacing: 2px; }
+  #annoTip .tt-row .vl { font-variant-numeric: tabular-nums; }
+  #annoTip .tt-row .bar {
+    flex: 1;
+    height: 4px;
+    background: var(--paper-deep);
+    border-radius: 2px;
+    overflow: hidden;
+    min-width: 60px;
+  }
+  #annoTip .tt-row .bar i { display: block; height: 100%; background: var(--ink); }
+  @media (max-width: 720px) {
+    header, main, footer { padding-left: 20px; padding-right: 20px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="masthead">
+    <span class="mark">听<em>写</em>纸</span>
+    <span class="sub">Confucius4-R2T2 · Jev</span>
+    <span id="statusText">未开始</span>
+  </div>
+</header>
+
+<div class="wave-wrap" id="waveWrap"><div><canvas id="waveCanvas"></canvas></div></div>
+
+<main>
+  <div id="captions">
+    <div class="empty">
+      <span class="big">按下录音键，说什么，纸上就写什么。</span>
+      逐句实时听写，字一出现即标注——<br>
+      <b style="font-weight:600">加粗＋朱砂线</b> 是重点；句子上方楷体小注是情绪；
+      句后〔问〕〔行动〕〔异议〕是意图。<br>
+      填入 TypeSafe API Key 后，标注随文字几乎同步出现。
+    </div>
+  </div>
+</main>
+
+<footer>
+  <button id="micBtn">
+    <span class="disc"><i></i></span>
+    <span class="label" id="micLabel">录音</span>
+  </button>
+
+  <span class="foot-item">语言
+    <select id="langSel">
+      <option value="Chinese" selected>中文</option>
+      <option value="zhen">中英</option>
+      <option value="English">English</option>
+    </select>
+  </span>
+
+  <span class="foot-item toggle" id="annoToggle"><span class="box"></span>智能标注</span>
+
+  <span class="foot-item">Key <input type="password" id="tsKey" placeholder="console.typesafe.ai" autocomplete="off"></span>
+
+  <span class="foot-right">
+    <span id="annoState">标注未启用</span>
+    <span id="stats">0 字 · 延迟 -</span>
+    <button id="advBtn">设置</button>
+    <button id="clearBtn">翻页</button>
+  </span>
+
+  <div id="advPanel" class="open">
+    <span class="foot-item">识别服务 <input type="text" id="wsUrl" spellcheck="false"></span>
+    <span style="color:var(--ink-faint)">低置信度不标注；悬停句子看数值。</span>
+    <div class="cfg-group">
+      <span class="cfg-label">情绪</span>
+      <span id="emoCfgBox" class="cfg-tags"></span>
+      <input type="text" id="emoAdd" class="cfg-add" placeholder="＋ 添加情绪（可选 名称=英文描述）">
+    </div>
+    <div class="cfg-group">
+      <span class="cfg-label">意图</span>
+      <span id="intentCfgBox" class="cfg-tags"></span>
+      <input type="text" id="intentAdd" class="cfg-add" placeholder="＋ 添加意图（可选 名称=英文描述）">
+    </div>
+    <div class="cfg-group">
+      <span class="cfg-label">自动发现</span>
+      <span class="foot-item">DeepSeek Key <input type="password" id="dsKey" placeholder="platform.deepseek.com" autocomplete="off"></span>
+      <span class="foot-item">模型 <input type="text" id="dsModel" class="cfg-add" style="width:150px" spellcheck="false"></span>
+      <span id="dsState" style="font-size:12px;color:var(--ink-faint)"></span>
+    </div>
+  </div>
+
+  <div class="legend" id="legend"></div>
+</footer>
+
+<div id="toast"></div>
+
+<script>
+// ================= 基础配置 =================
+// 你的 ASR 公网 WebSocket 地址（部署后替换 YOUR-PUBLIC-ASR-HOST；也可在页面「设置」里随时改）
+const PUBLIC_WS = "wss://YOUR-PUBLIC-ASR-HOST/asr_stream_api_v1";
+const LOCAL_WS  = "ws://127.0.0.1:6006/asr_stream_api_v1";
+const SECRET_KEY = "test0102";
+const EOS = "YOUDAO_ONETIME_ASR_STREAM_EOS";
+const TARGET_SR = 16000;
+const CHUNK_MS = 160;
+
+const TH_KEY = 0.60;
+const TH_CONF = 0.50;
+// 意图印章四道门：choice 命中 + 置信度 + 领先幅度 + Noul 复核（strict 类目线更高）
+const INTENT_CONF_TH = 0.55;
+const INTENT_MARGIN_TH = 0.12;
+const INTENT_NOUL_TH = 0.55;
+const INTENT_STRICT_TH = 0.70;
+const LIVE_DEBOUNCE = 350;    // 文字到达后多久发起实时分析
+const LIVE_MIN_GAP = 700;     // 同一句实时分析的最小间隔
+const MAX_PARALLEL = 2;       // 标注并发数
+
+const $ = id => document.getElementById(id);
+const captionsEl = $("captions");
+
+function defaultWsUrl() {
+  const isLocal = location.hostname === "localhost" || location.hostname === "127.0.0.1";
+  return (isLocal || PUBLIC_WS.includes("YOUR-PUBLIC-ASR-HOST")) ? LOCAL_WS : PUBLIC_WS;
+}
+$("wsUrl").value = localStorage.getItem("wsUrl") || defaultWsUrl();
+$("wsUrl").addEventListener("change", e => localStorage.setItem("wsUrl", e.target.value.trim()));
+$("langSel").value = localStorage.getItem("lang") || "Chinese";
+$("langSel").addEventListener("change", e => localStorage.setItem("lang", e.target.value));
+$("tsKey").value = localStorage.getItem("tsKey") || "";
+$("tsKey").addEventListener("change", e => { localStorage.setItem("tsKey", e.target.value.trim()); annoErr=""; syncAnnoUI(); pump(); });
+
+let annoOn = localStorage.getItem("annoOn") === "1" && $("tsKey").value.trim();
+function syncAnnoUI() {
+  $("annoToggle").classList.toggle("on", annoOn);
+  updateAnnoStatus();
+}
+$("annoToggle").onclick = () => {
+  annoOn = !annoOn;
+  localStorage.setItem("annoOn", annoOn ? "1" : "0");
+  syncAnnoUI();
+  if (annoOn) pump();
+};
+$("advBtn").onclick = () => $("advPanel").classList.toggle("open");
+
+function setStatus(text, rec) {
+  const el = $("statusText");
+  el.textContent = text;
+  el.className = rec ? "rec" : "";
+}
+let toastTimer;
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.style.display = "none", 5000);
+}
+function updateStats() {
+  $("stats").textContent = totalChars + " 字 · 延迟 " + lastLatency;
+}
+
+// ================= 听写渲染（按句，追加式） =================
+const TERMINALS = "。！？!?；;…\n";
+const FORCE_SPLIT = 40;
+const SEG_EVERY = 6;
+
+let sentences = [];
+let pendingBuf = "";
+let tailEl = null;
+let curSeg = null, segCount = 0;
+let totalChars = 0, lastLatency = "-";
+
+function newSeg() {
+  if (tailEl && tailEl.isConnected) tailEl.remove();
+  curSeg = document.createElement("p");
+  curSeg.className = "seg";
+  captionsEl.appendChild(curSeg);
+  segCount = 0;
+  tailEl = null;
+}
+function clearCaptions() {
+  captionsEl.innerHTML = "";
+  curSeg = null; tailEl = null;
+  sentences = []; pendingBuf = ""; totalChars = 0; lastLatency = "-";
+  liveSeq++;
+  annoQueue.length = 0;
+  updateStats();
+}
+function ensureSeg() { if (!curSeg || !captionsEl.contains(curSeg)) newSeg(); return curSeg; }
+function updateTail() {
+  ensureSeg();
+  if (!tailEl || !curSeg.contains(tailEl)) {
+    tailEl = document.createElement("span");
+    tailEl.className = "tail";
+    curSeg.appendChild(tailEl);
+  }
+  tailEl.textContent = pendingBuf;
+  captionsEl.scrollTop = captionsEl.scrollHeight;
+}
+function visibleLen(s) { return s.replace(/[\s。！？!?；;…、，,\.]/g, "").length; }
+
+function addSentence(text) {
+  const ph = captionsEl.querySelector(".empty");
+  if (ph) ph.remove();
+  if (!curSeg) newSeg();
+  if (segCount >= SEG_EVERY) newSeg();
+  const el = document.createElement("span");
+  el.className = "sentence";
+  el.textContent = text;
+  curSeg.insertBefore(el, tailEl || null);
+  segCount++;
+  const s = { text, el, anno: null };
+  sentences.push(s);
+  enqueueFinal(s);            // 句子闭合 → 立即终判（不等防抖）
+}
+function appendAsrText(t) {
+  if (!t) return;
+  const ph = captionsEl.querySelector(".empty");
+  if (ph) ph.remove();
+  pendingBuf += t;
+  totalChars += t.length;
+  updateStats();
+  let cut = -1;
+  for (let i = 0; i < pendingBuf.length; i++) {
+    if (TERMINALS.includes(pendingBuf[i])) {
+      const candidate = pendingBuf.slice(cut + 1, i + 1);
+      if (visibleLen(candidate) >= 2) { addSentence(candidate); cut = i; }
+    }
+  }
+  if (cut >= 0) { pendingBuf = pendingBuf.slice(cut + 1); liveSeq++; }
+  while (pendingBuf.length > FORCE_SPLIT) {
+    addSentence(pendingBuf.slice(0, FORCE_SPLIT));
+    pendingBuf = pendingBuf.slice(FORCE_SPLIT);
+  }
+  updateTail();
+  scheduleLiveAnno();          // 文字还在长 → 实时分析当前句
+}
+function flushPending() {
+  const rest = pendingBuf.trim();
+  pendingBuf = "";
+  if (visibleLen(rest) >= 2) addSentence(rest);
+  updateTail();
+}
+$("clearBtn").onclick = clearCaptions;
+curSeg = null; tailEl = null;
+
+// ================= 标注体系配置（默认 + 用户自定义） =================
+// 情绪：{name, color, desc(给 Jev 的英文描述), neverTag(不浮注), fixed}
+const DEFAULT_EMO = [
+  { name: "平静", color: "#8A867D", neverTag: true, fixed: true, desc: "Calm, factual, no clear emotion" },
+  { name: "高兴", color: "#34703F", fixed: true, desc: "Joy, excitement, satisfaction, humor" },
+  { name: "愤怒", color: "#B3261E", fixed: true, desc: "Anger, irritation, complaint, blame" },
+  { name: "焦虑", color: "#8A6410", fixed: true, desc: "Worry, stress, nervousness, urgency" },
+  { name: "低落", color: "#2F5493", fixed: true, desc: "Disappointment, regret, low spirits" },
+  { name: "惊讶", color: "#674293", fixed: true, desc: "Surprise, astonishment, disbelief" },
+];
+// 意图：{name, desc, hide(不显示印章), strict(需更明确的复核), fixed}
+const DEFAULT_INTENT = [
+  { name: "陈述", hide: true, fixed: true, desc: "Providing information or narrating" },
+  { name: "问", fixed: true, desc: "Asking a question or seeking information" },
+  { name: "行动", fixed: true, desc: "Asking or telling someone to do something; an action item" },
+  { name: "同意", fixed: true, desc: "Explicitly agreeing, approving, or accepting a proposal" },
+  { name: "异议", fixed: true, strict: true, desc: "EXPLICIT disagreement — directly rejecting, contradicting, or firmly opposing a proposal, idea, or statement (like '我不同意' '这个方案不行'). Presenting a different view, mild doubt, hesitation, or discussing trade-offs WITHOUT rejecting is NOT this. When unsure, answer no." },
+  { name: "其他", hide: true, fixed: true, desc: "Greeting, filler, transition, or unclear" },
+];
+const EMO_PALETTE = ["#8C5A2B", "#8C3B63", "#2E6D6A", "#6B4E16", "#7A3B2E", "#46557E", "#7D4E8C", "#5B5330"];
+
+function loadFullList(key, defaults) {
+  let v = null;
+  try { v = JSON.parse(localStorage.getItem(key) || "null"); } catch {}
+  if (Array.isArray(v)) {
+    if (v.some(x => x.fixed)) return v;      // 新格式：全量保存
+    return defaults.concat(v);               // 旧格式：仅自定义项，补上默认
+  }
+  return defaults.map(x => ({ ...x }));
+}
+let emoCfg = loadFullList("emoCfg", DEFAULT_EMO);
+let intentCfg = loadFullList("intentCfg", DEFAULT_INTENT);
+function saveCfg() {                          // 全量保存（fixed 仅作"默认项"标记）
+  localStorage.setItem("emoCfg", JSON.stringify(emoCfg));
+  localStorage.setItem("intentCfg", JSON.stringify(intentCfg));
+}
+const emoByName = n => emoCfg.find(x => x.name === n);
+const intentByName = n => intentCfg.find(x => x.name === n);
+
+function parseAdd(raw) {          // "名称" 或 "名称=英文描述"
+  const s = (raw || "").trim();
+  if (!s) return null;
+  const i = s.indexOf("=");
+  return i < 0 ? { name: s, desc: "" } : { name: s.slice(0, i).trim(), desc: s.slice(i + 1).trim() };
+}
+function addCfgItem(list, raw, kind) {
+  const item = parseAdd(raw);
+  if (!item) return;
+  if (list.some(x => x.name === item.name)) { toast("「" + item.name + "」已存在"); return; }
+  const entry = { name: item.name, desc: item.desc };
+  if (kind === "emo") {
+    const used = new Set(list.map(x => x.color));
+    entry.color = EMO_PALETTE.find(c => !used.has(c)) || EMO_PALETTE[list.length % EMO_PALETTE.length];
+  }
+  list.push(entry);
+  saveCfg();
+  renderCfgUI();
+  toast("已添加" + (kind === "emo" ? "情绪" : "意图") + "「" + item.name + "」，下句话起生效");
+}
+function renderCfgUI() {
+  const box = $("emoCfgBox");
+  box.innerHTML = "";
+  emoCfg.forEach((e, i) => {
+    const t = document.createElement("span");
+    t.className = "cfg-tag editable";
+    t.dataset.k = "emo"; t.dataset.i = i;
+    t.title = "点击编辑";
+    t.innerHTML = `<span class="dot" style="background:${e.color}"></span>${e.name}`;
+    box.appendChild(t);
+  });
+  const box2 = $("intentCfgBox");
+  box2.innerHTML = "";
+  intentCfg.forEach((it, i) => {
+    const t = document.createElement("span");
+    t.className = "cfg-tag editable";
+    t.dataset.k = "intent"; t.dataset.i = i;
+    t.title = "点击编辑";
+    t.innerHTML = it.name;
+    box2.appendChild(t);
+  });
+  // 图例
+  const lg = $("legend");
+  const emos = emoCfg.filter(x => !x.neverTag);
+  const its = intentCfg.filter(x => !x.hide);
+  lg.innerHTML =
+    `<span><span class="u-hand">加粗下划线</span>＝重点</span>` +
+    emos.map(e => `<span class="kai" style="color:${e.color}">${e.name}</span>`).join("") +
+    `<span>＝情绪（注＋底色）</span>` +
+    (its.length ? `<span class="kai">${its.map(x => "〔" + x.name + "〕").join("")}＝意图</span>` : "");
+}
+
+// —— 标签编辑卡（全量可改可删，含默认项） ——
+(function () {
+  const ed = document.createElement("div");
+  ed.id = "cfgEditor";
+  document.body.appendChild(ed);
+  let cur = null;   // {k, i}
+
+  const open = (k, i, anchor) => {
+    const list = k === "emo" ? emoCfg : intentCfg;
+    const x = list[i];
+    if (!x) return;
+    cur = { k, i };
+    const colorRow = k === "emo"
+      ? `<label class="ed-row">颜色 <input type="color" id="edColor" value="${/^#[0-9a-fA-F]{6}$/.test(x.color || "") ? x.color : "#8A867D"}"></label>`
+      : "";
+    const flags = k === "emo"
+      ? `<label class="ed-flag"><input type="checkbox" id="edNever" ${x.neverTag ? "checked" : ""}>不标注此项（如"平静"）</label>`
+      : `<label class="ed-flag"><input type="checkbox" id="edHide" ${x.hide ? "checked" : ""}>不显示印章（如"陈述"）</label>` +
+        `<label class="ed-flag"><input type="checkbox" id="edStrict" ${x.strict ? "checked" : ""}>需更强确认才标注（如"异议"）</label>`;
+    ed.innerHTML =
+      `<div class="ed-title">编辑${k === "emo" ? "情绪" : "意图"}${x.fixed ? " · 默认项" : ""}</div>` +
+      `<div class="ed-row">名称 <input type="text" id="edName" value="${(x.name || "").replace(/"/g, "&quot;")}" maxlength="8"></div>` +
+      colorRow +
+      `<div class="ed-row desc">描述 <input type="text" id="edDesc" value="${(x.desc || "").replace(/"/g, "&quot;")}" placeholder="英文判定标准（可空）"></div>` +
+      flags +
+      `<div class="ed-btns"><button id="edDel" class="danger">删 除</button><button id="edSave" class="primary">保 存</button></div>`;
+    ed.style.display = "block";
+    const r = anchor.getBoundingClientRect();
+    let left = Math.min(r.left, innerWidth - 310), top = r.bottom + 8;
+    if (top + 230 > innerHeight) top = Math.max(10, r.top - 235);
+    ed.style.left = Math.max(10, left) + "px";
+    ed.style.top = top + "px";
+    $("edSave").onclick = () => {
+      const name = $("edName").value.trim();
+      if (!name) { toast("名称不能为空"); return; }
+      if (list.some((y, j) => j !== i && y.name === name)) { toast("名称与现有项重复"); return; }
+      x.name = name;
+      x.desc = $("edDesc").value.trim();
+      if (k === "emo") {
+        x.color = $("edColor").value;
+        x.neverTag = $("edNever").checked;
+      } else {
+        x.hide = $("edHide").checked;
+        x.strict = $("edStrict").checked;
+      }
+      saveCfg(); renderCfgUI(); close();
+      toast("已保存「" + name + "」");
+    };
+    $("edDel").onclick = () => {
+      list.splice(i, 1);
+      saveCfg(); renderCfgUI(); close();
+      toast("已删除「" + x.name + "」，下句话起生效");
+    };
+    ed.querySelector("input").focus();
+  };
+  const close = () => { ed.style.display = "none"; cur = null; };
+  document.addEventListener("click", ev => {
+    const tag = ev.target.closest(".cfg-tag.editable");
+    if (tag) { open(tag.dataset.k, +tag.dataset.i, tag); return; }
+    if (!ev.target.closest("#cfgEditor")) close();   // 点外面收起
+  });
+  document.addEventListener("keydown", ev => { if (ev.key === "Escape") close(); });
+})();
+$("emoAdd").addEventListener("keydown", ev => { if (ev.key === "Enter") { addCfgItem(emoCfg, ev.target.value, "emo"); ev.target.value = ""; } });
+$("intentAdd").addEventListener("keydown", ev => { if (ev.key === "Enter") { addCfgItem(intentCfg, ev.target.value, "intent"); ev.target.value = ""; } });
+renderCfgUI();
+
+// ================= 方案B：标签自动发现（DeepSeek 非推理，低频扫描） =================
+let dsRejected = (() => { try { const v = JSON.parse(localStorage.getItem("dsRejected") || "[]"); return Array.isArray(v) ? v : []; } catch { return []; } })();
+const pendingSuggest = new Set();
+let dsBusy = false, lastScanCount = 0;
+$("dsKey").value = localStorage.getItem("dsKey") || "";
+$("dsModel").value = localStorage.getItem("dsModel") || "deepseek-flash";
+$("dsKey").addEventListener("change", e => { localStorage.setItem("dsKey", e.target.value.trim()); $("dsState").textContent = ""; });
+$("dsModel").addEventListener("change", e => localStorage.setItem("dsModel", e.target.value.trim()));
+
+const sgBox = document.createElement("div");
+sgBox.id = "suggestBox";
+document.body.appendChild(sgBox);
+
+function suggestItem(k, x) {
+  const name = String(x && x.name || "").trim().slice(0, 6);
+  const desc = String(x && x.desc || "").trim().slice(0, 200);
+  if (!name) return 0;
+  if (emoCfg.some(e => e.name === name) || intentCfg.some(i => i.name === name)) return 0;
+  if (dsRejected.some(r => r.k === k && r.name === name)) return 0;
+  if (pendingSuggest.has(k + name)) return 0;
+  pendingSuggest.add(k + name);
+  const card = document.createElement("div");
+  card.className = "sg-card";
+  card.innerHTML =
+    `<div class="sg-kind">发现新${k === "emo" ? "情绪" : "意图"}</div>` +
+    `<div class="sg-name">${name.replace(/</g, "&lt;")}</div>` +
+    `<div class="sg-desc">${(desc || "（无描述）").replace(/</g, "&lt;")}</div>` +
+    `<div class="sg-btns"><button class="ok">采 纳</button><button class="no">忽 略</button></div>`;
+  card.querySelector(".ok").onclick = () => {
+    const list = k === "emo" ? emoCfg : intentCfg;
+    const entry = { name, desc };
+    if (k === "emo") {
+      const used = new Set(list.map(x2 => x2.color));
+      entry.color = EMO_PALETTE.find(c => !used.has(c)) || EMO_PALETTE[list.length % EMO_PALETTE.length];
+    }
+    list.push(entry);
+    saveCfg(); renderCfgUI();
+    toast("已加入" + (k === "emo" ? "情绪" : "意图") + "「" + name + "」，下句话起生效");
+    card.remove(); pendingSuggest.delete(k + name);
+  };
+  card.querySelector(".no").onclick = () => {
+    dsRejected.push({ k, name });
+    localStorage.setItem("dsRejected", JSON.stringify(dsRejected));
+    card.remove(); pendingSuggest.delete(k + name);
+  };
+  sgBox.appendChild(card);
+  return 1;
+}
+
+async function discoverLabels(final) {
+  if (!$("dsKey").value.trim() || dsBusy) return;
+  if (!final && sentences.length - lastScanCount < 8) return;   // 新句不够不扫
+  const text = sentences.slice(-40).map(s => s.text).join("");
+  if (text.replace(/\s/g, "").length < 120) return;
+  dsBusy = true;
+  $("dsState").textContent = "扫描中…";
+  try {
+    const res = await fetch("/deepseek", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + $("dsKey").value.trim() },
+      body: JSON.stringify({
+        model: $("dsModel").value.trim() || "deepseek-flash",
+        messages: [
+          { role: "system", content: "你是实时对话转写的标签体系审核员。用户给你最近的转写片段，和现有的情绪/意图标签集合。任务：找出【反复出现】但现有标签覆盖不了的新情绪或新意图。规则：1) 极度保守——同类表达在片段中至少出现 3 次才提；2) 新标签名不超过 4 个中文字；3) 每类最多 2 个，没有就返回空数组；4) desc 用一句英文写清判定标准，供下游分类器使用；5) 只输出 JSON，不要任何解释。格式：{\"emotions\":[{\"name\":\"..\",\"desc\":\"..\"}],\"intents\":[{\"name\":\"..\",\"desc\":\"..\"}]}" },
+          { role: "user", content: `现有情绪标签：${emoCfg.map(e => e.name).join("、")}\n现有意图标签：${intentCfg.map(x => x.name).join("、")}\n\n转写片段（从旧到新）：\n"""${text}"""` }
+        ],
+        temperature: 0.2,
+        max_tokens: 400,
+        response_format: { type: "json_object" }
+      })
+    });
+    if (res.status === 401) { $("dsState").textContent = "DeepSeek Key 无效"; return; }
+    if (!res.ok) { $("dsState").textContent = ""; return; }
+    const j = await res.json();
+    lastScanCount = sentences.length;
+    let out; try { out = JSON.parse(j.choices?.[0]?.message?.content || "{}"); } catch { $("dsState").textContent = ""; return; }
+    let n = 0;
+    (out.emotions || []).forEach(x => { n += suggestItem("emo", x); });
+    (out.intents || []).forEach(x => { n += suggestItem("intent", x); });
+    $("dsState").textContent = n ? "发现 " + n + " 个候选，见右下角" : "暂无新标签";
+  } catch {
+    $("dsState").textContent = "";
+  } finally {
+    dsBusy = false;
+  }
+}
+let discoveryTimer = null;
+
+// ================= Jev 标注（双路并发 + 实时/终判两级） =================
+
+const annoQueue = [];
+const inflight = new Set();
+let annoErr = "";
+const annoEnabled = () => annoOn && $("tsKey").value.trim().length > 0;
+
+function updateAnnoStatus() {
+  const el = $("annoState");
+  if (annoErr) { el.textContent = "标注：" + annoErr; el.className = "err"; return; }
+  el.className = "";
+  if (!annoEnabled()) { el.textContent = $("tsKey").value.trim() ? "标注已关闭" : "未填 Key"; return; }
+  const n = annoQueue.length + inflight.size;
+  el.textContent = n ? "标注中 ×" + n : "标注就绪";
+}
+
+function updateAnnoStatusSafe(){ try{updateAnnoStatus()}catch(e){} }
+
+// —— 实时级：分析"正在说的半句" ——
+let liveTimer = null;
+let liveLastText = "", liveLastAt = 0, liveSeq = 0;   // liveSeq：半句内容换代计数
+function scheduleLiveAnno() {
+  if (!annoEnabled()) return;
+  if (visibleLen(pendingBuf) < 4) return;
+  clearTimeout(liveTimer);
+  liveTimer = setTimeout(() => {
+    if (!annoEnabled() || !tailEl) return;
+    const text = pendingBuf;
+    if (text === liveLastText) return;                    // 没新字就不请求
+    if (Date.now() - liveLastAt < LIVE_MIN_GAP) return;   // 限频
+    if (visibleLen(text) < 4) return;
+    liveLastText = text; liveLastAt = Date.now();
+    annoQueue.push({ kind: "live", text, el: tailEl, seq: liveSeq });
+    pump();
+  }, LIVE_DEBOUNCE);
+}
+// —— 终判级：句子闭合立即排入 ——
+function enqueueFinal(s) {
+  if (!annoEnabled()) { updateAnnoStatusSafe(); return; }
+  annoQueue.push({ kind: "final", text: s.text, el: s.el });
+  updateAnnoStatusSafe();
+  pump();
+}
+
+function pump() {
+  while (inflight.size < MAX_PARALLEL && annoQueue.length && annoEnabled()) {
+    const job = annoQueue.shift();
+    if (!job.el || !job.el.isConnected) continue;
+    const p = runJob(job).catch(() => {}).finally(() => { inflight.delete(p); pump(); });
+    inflight.add(p);
+  }
+  updateAnnoStatusSafe();
+}
+
+async function runJob(job) {
+  const key = $("tsKey").value.trim();
+  const prior = sentences.slice(0, -1).slice(-8).map(x => x.text).join("").slice(-400);
+  const emoCriteria = {}, intentCriteria = {}, questions = {};
+  emoCfg.forEach(e => { emoCriteria[e.name] = e.desc || `The speaker clearly shows the emotion "${e.name}" (interpret this Chinese emotion label)`; });
+  intentCfg.forEach(x => { intentCriteria[x.name] = x.desc || `The utterance's intent is "${x.name}" (interpret this Chinese intent label)`; });
+  const qs = {
+    is_key: {
+      type: "noul",
+      instructions: "Does target_sentence carry a key point — a decision, conclusion, action item, commitment, important number/date/fact, or notable topic shift?",
+      criteria: { true: "Worth remembering or acting on", false: "Routine, filler, redundant" }
+    }
+  };
+  if (emoCfg.length >= 2) {
+    qs.emotion = {
+      type: "choice",
+      instructions: "Which emotion is the speaker expressing in target_sentence?",
+      criteria: emoCriteria
+    };
+  }
+  if (intentCfg.length >= 2) {
+    qs.intent = {
+      type: "choice",
+      instructions: "What is the communicative intent of target_sentence? If nothing fits well, prefer 陈述 or 其他 rather than forcing a weak match.",
+      criteria: intentCriteria
+    };
+    // 投机性复核随意图集一起发
+    intentCfg.filter(x => !x.hide).forEach(x => {
+      qs["chk_" + x.name] = {
+        type: "noul",
+        instructions: `Does target_sentence EXPLICITLY and clearly express this specific intent — "${x.name}": ${x.desc || x.name}? Be strict: if it is only implied, partial, or you are unsure, answer false.`,
+        criteria: { true: "The sentence explicitly expresses this intent", false: "Not explicit, or a different intent" }
+      };
+    });
+  }
+  const body = {
+    state: {
+      note: "Live speech transcript (Chinese/English). Evaluate ONLY target_sentence; recent_context is what was said before, for reference. target_sentence may be an unfinished sentence cut mid-stream — judge what is there. Choice option keys are Chinese labels.",
+      target_sentence: job.text,
+      recent_context: prior,
+    },
+    model: "jev-latest",
+    questions: qs
+  };
+  const doFetch = () => fetch("/typesafe", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Authorization": "Bearer " + key },
+    body: JSON.stringify(body),
+  });
+  let res = await doFetch();
+  if (res.status === 429 || res.status === 529) {
+    await new Promise(r => setTimeout(r, 1200));
+    res = await doFetch();
+  }
+  if (res.status === 401 || res.status === 403) {
+    annoErr = "API Key 无效";
+    toast("智能标注已暂停：API Key 无效");
+    updateAnnoStatusSafe();
+    return;
+  }
+  if (!res.ok) return;
+  const j = await res.json();
+  const a = j.answers || {};
+  // 意图命中项的领先幅度（top1-top2）与 Noul 复核值
+  let margin = null, chkVal = null;
+  const chosen = a.intent ? a.intent.choice : null;
+  if (a.intent && a.intent.probabilities) {
+    const arr = Object.values(a.intent.probabilities).sort((x, y) => y - x);
+    margin = (arr[0] ?? 1) - (arr[1] ?? 0);
+  }
+  if (chosen && a["chk_" + chosen]) chkVal = a["chk_" + chosen].noul;
+  applyAnno(job, {
+    key: a.is_key ? a.is_key.noul : null,
+    emo: a.emotion ? a.emotion.choice : null,
+    emoConf: a.emotion ? a.emotion.confidence : null,
+    intent: chosen,
+    intentConf: a.intent ? a.intent.confidence : null,
+    margin, chk: chkVal,
+  });
+}
+
+function applyAnno(job, a) {
+  const el = job.el;
+  if (!el || !el.isConnected) return;
+  // 迟到的实时结果不作数：半句已换代（句子闭合/被清空）
+  if (job.kind === "live" && job.seq !== liveSeq) return;
+
+  // 清掉旧标记（幂等，实时→终判会重复调用）
+  el.classList.remove("key");
+  el.querySelectorAll(".emo-tag,.intent-seal").forEach(n => n.remove());
+  el.style.backgroundColor = "";
+  el.removeAttribute("title");
+  el._anno = null;
+
+  const showKey = a.key != null && a.key >= TH_KEY;
+  if (showKey) el.classList.add("key");
+
+  const emo = a.emo ? emoByName(a.emo) : null;
+  const emoShown = emo && !emo.neverTag && (a.emoConf ?? 1) >= TH_CONF;
+  if (emoShown) {
+    const tag = document.createElement("span");
+    tag.className = "emo-tag";
+    tag.style.color = emo.color;
+    tag.textContent = emo.name;
+    el.appendChild(tag);
+    el.style.backgroundColor = hexA(emo.color, 0.13);   // 情绪底色高亮
+  }
+  const it = a.intent ? intentByName(a.intent) : null;
+  if (it && !it.hide) {
+    const conf = a.intentConf ?? 1;
+    const noulTh = it.strict ? INTENT_STRICT_TH : INTENT_NOUL_TH;
+    const ok =
+      conf >= INTENT_CONF_TH &&
+      (a.margin == null || a.margin >= INTENT_MARGIN_TH) &&
+      (a.chk == null || a.chk >= noulTh);
+    if (ok) {
+      const seal = document.createElement("span");
+      seal.className = "intent-seal";
+      seal.textContent = "〔" + it.name + "〕";
+      el.appendChild(seal);
+    }
+  }
+  el._anno = { a, kind: job.kind };   // 悬浮卡片数据
+}
+function hexA(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
+// —— 悬浮数值卡片（替代原生 title，即悬即显） ——
+(function () {
+  const tip = document.createElement("div");
+  tip.id = "annoTip";
+  document.body.appendChild(tip);
+  const show = (target, e) => {
+    const d = target._anno;
+    if (!d) { tip.style.display = "none"; return; }
+    const a = d.a;
+    const rows = [];
+    const bar = (v, color) => `<span class="bar"><i style="width:${Math.round(v * 100)}%;${color ? "background:" + color : ""}"></i></span>`;
+    if (a.key != null) rows.push(`<div class="tt-row"><span class="lb">重点</span>${bar(a.key, a.key >= TH_KEY ? "#C0361C" : "")}<span class="vl">${a.key.toFixed(2)}</span></div>`);
+    if (a.emo) {
+      const em = emoByName(a.emo);
+      rows.push(`<div class="tt-row"><span class="lb">情绪</span>${bar(a.emoConf ?? 0, em ? em.color : "")}<span class="vl">${a.emo}${a.emoConf != null ? " " + a.emoConf.toFixed(2) : ""}</span></div>`);
+    }
+    if (a.intent) rows.push(`<div class="tt-row"><span class="lb">意图</span>${bar(a.intentConf ?? 0)}<span class="vl">${a.intent}${a.intentConf != null ? " " + a.intentConf.toFixed(2) : ""}</span></div>`);
+    if (a.intent && a.chk != null) rows.push(`<div class="tt-row"><span class="lb">复核</span>${bar(a.chk, "#C0361C")}<span class="vl">${a.chk.toFixed(2)}</span></div>`);
+    if (!rows.length) rows.push(`<div class="tt-row"><span class="vl" style="color:var(--ink-faint)">无标注数据</span></div>`);
+    tip.innerHTML = `<div class="tt-kind">${d.kind === "live" ? "实时判断" : d.kind === "final" ? "定稿" : ""}</div>` + rows.join("");
+    tip.style.display = "block";
+    move(e);
+  };
+  const move = e => {
+    if (tip.style.display !== "block") return;
+    const pad = 14;
+    let x = e.clientX + pad, y = e.clientY + pad;
+    const r = tip.getBoundingClientRect();
+    if (x + r.width > innerWidth - 8) x = e.clientX - r.width - pad;
+    if (y + r.height > innerHeight - 8) y = e.clientY - r.height - pad;
+    tip.style.left = x + "px";
+    tip.style.top = y + "px";
+  };
+  document.addEventListener("mouseover", e => {
+    const t = e.target.closest("span.sentence, span.tail");
+    if (t) show(t, e); else tip.style.display = "none";
+  });
+  document.addEventListener("mousemove", move);
+  document.addEventListener("mousedown", () => tip.style.display = "none");
+})();
+syncAnnoUI();
+
+// ================= 音频采集 =================
+const WORKLET_SRC = `
+class CaptureProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this._buf = new Float32Array(${Math.round(TARGET_SR * CHUNK_MS / 1000)});
+    this._pos = 0;
+  }
+  process(inputs) {
+    const ch = inputs[0][0];
+    if (!ch) return true;
+    const step = Math.min(ch.length, this._buf.length - this._pos);
+    this._buf.set(ch.subarray(0, step), this._pos);
+    this._pos += step;
+    if (this._pos >= this._buf.length) {
+      this.port.postMessage({ type: "chunk", data: new Float32Array(this._buf) });
+      this._pos = 0;
+    }
+    return true;
+  }
+}
+registerProcessor("capture-processor", CaptureProcessor);
+`;
+function floatToInt16(f32) {
+  const out = new Int16Array(f32.length);
+  for (let i = 0; i < f32.length; i++) {
+    const s = Math.max(-1, Math.min(1, f32[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return out;
+}
+
+// ================= 音波可视化 =================
+const wave = {
+  canvas: $("waveCanvas"), ctx: null, analyser: null, data: null,
+  bars: 110, amps: null, raf: 0, running: false,
+  init() {
+    this.ctx = this.canvas.getContext("2d");
+    this.amps = new Float32Array(this.bars);
+    this.resize();
+    window.addEventListener("resize", () => this.resize());
+    this.loop = this.loop.bind(this);
+    this.raf = requestAnimationFrame(this.loop);
+  },
+  resize() {
+    const dpr = window.devicePixelRatio || 1;
+    const r = this.canvas.getBoundingClientRect();
+    this.canvas.width = Math.max(1, r.width * dpr);
+    this.canvas.height = Math.max(1, r.height * dpr);
+  },
+  attach(analyser) {
+    this.analyser = analyser;
+    this.data = analyser ? new Uint8Array(analyser.fftSize) : null;
+  },
+  loop() {
+    this.raf = requestAnimationFrame(this.loop);
+    if (!this.ctx) return;
+    // 每帧自适应尺寸（音波条展开时 rect 才有高度）
+    const r = this.canvas.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const needW = Math.max(1, Math.round(r.width * dpr));
+    const needH = Math.max(1, Math.round(r.height * dpr));
+    if (this.canvas.width !== needW || this.canvas.height !== needH) {
+      this.canvas.width = needW; this.canvas.height = needH;
+    }
+    const c = this.ctx, W = this.canvas.width, H = this.canvas.height;
+    c.clearRect(0, 0, W, H);
+    const n = this.bars, gap = W / n, bw = Math.max(1.5, gap * 0.52);
+    const mid = H / 2;
+    const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    let targets = this.amps;
+    if (this.analyser && this.running && !reduceMotion) {
+      this.analyser.getByteTimeDomainData(this.data);
+      const bucket = Math.floor(this.data.length / n);
+      for (let i = 0; i < n; i++) {
+        let sum = 0;
+        for (let k = 0; k < bucket; k++) {
+          const v = (this.data[i * bucket + k] - 128) / 128;
+          sum += v * v;
+        }
+        const rms = Math.sqrt(sum / bucket);
+        // 视觉增益 + 包络对称衰减（中間高、两侧低）
+        const env = Math.sin(Math.PI * (i + .5) / n) * .55 + .45;
+        targets[i] = Math.min(1, rms * 4.2 * env);
+      }
+    } else if (!this.running) {
+      for (let i = 0; i < n; i++) targets[i] = 0;
+    }
+    c.fillStyle = this.running ? "#1C1A17" : "#DEDBD2";
+    for (let i = 0; i < n; i++) {
+      const cur = this.amps[i];
+      const t = targets[i];
+      this.amps[i] = cur + (t - cur) * (t > cur ? 0.5 : 0.12); // 攻快放慢
+      const h = Math.max(this.running ? 3 : 2, this.amps[i] * (H * 0.86));
+      const x = i * gap + (gap - bw) / 2;
+      const y = mid - h / 2;
+      c.beginPath();
+      const r = Math.min(bw / 2, 2);
+      c.roundRect ? c.roundRect(x, y, bw, h, r) : c.rect(x, y, bw, h);
+      c.fill();
+    }
+  },
+};
+wave.init();
+
+// ================= 主会话 =================
+let session = null;
+
+async function startSession() {
+  if (session) return;
+  const wsUrl = $("wsUrl").value.trim() || defaultWsUrl();
+
+  setStatus("请求麦克风…", true);
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+  } catch (e) {
+    setStatus("麦克风被拒绝", false);
+    toast("无法获取麦克风：" + e.message + "（需 HTTPS 或 localhost，并允许权限）");
+    return;
+  }
+
+  let ws;
+  try {
+    setStatus("连接服务…", true);
+    ws = new WebSocket(wsUrl);
+    ws.binaryType = "arraybuffer";
+    await new Promise((res, rej) => {
+      ws.onopen = res;
+      ws.onerror = () => rej(new Error("WebSocket 连接失败，请检查「设置」里的服务地址"));
+      setTimeout(() => rej(new Error("WebSocket 连接超时")), 8000);
+    });
+  } catch (e) {
+    setStatus("连接失败", false);
+    toast(e.message);
+    stream.getTracks().forEach(t => t.stop());
+    return;
+  }
+
+  ws.send(JSON.stringify({
+    channels: 1,
+    sample_rate: TARGET_SR,
+    requestId: crypto.randomUUID ? crypto.randomUUID() : String(Date.now()),
+    language: $("langSel").value,
+    use_vad: false,
+    secret_key: SECRET_KEY,
+    mode: "slow",
+  }));
+
+  ws.onmessage = ev => {
+    if (typeof ev.data !== "string") return;
+    let j;
+    try { j = JSON.parse(ev.data); } catch { return; }
+    if (!j.status) return;
+    if (j.status === "error") { toast("服务端错误：" + (j.msg || "")); return; }
+    if (j.status === "connected") { setStatus("识别中", true); return; }
+    if (j.status === "success" && j.msg) {
+      appendAsrText(j.msg.text || "");
+      if (j.msg.total_cost_ms != null) { lastLatency = j.msg.total_cost_ms + "ms"; updateStats(); }
+      if (j.msg.reset) finishStop();
+    }
+  };
+  ws.onclose = () => { if (session && session.ws === ws) { setStatus("已断开", false); cleanup(false); } };
+  ws.onerror = () => {};
+
+  const audioCtx = new AudioContext({ sampleRate: TARGET_SR });
+  await audioCtx.resume();
+  const src = audioCtx.createMediaStreamSource(stream);
+  // 波形分析支路（不回放）
+  const analyser = audioCtx.createAnalyser();
+  analyser.fftSize = 2048;
+  src.connect(analyser);
+  wave.attach(analyser);
+  // 采集支路
+  const blob = new Blob([WORKLET_SRC], { type: "application/javascript" });
+  await audioCtx.audioWorklet.addModule(URL.createObjectURL(blob));
+  const node = new AudioWorkletNode(audioCtx, "capture-processor");
+  node.port.onmessage = e => {
+    if (!session) return;
+    if (e.data.type === "chunk" && session.ws.readyState === WebSocket.OPEN) {
+      session.ws.send(floatToInt16(e.data.data).buffer);
+    }
+  };
+  src.connect(node);
+
+  session = { ws, audioCtx, stream, node, stopping: false };
+  wave.running = true;
+  $("waveWrap").classList.add("on");
+  $("micBtn").classList.add("rec");
+  $("micLabel").textContent = "停止";
+  setStatus("识别中", true);
+  clearCaptions();
+  lastScanCount = 0;
+  discoveryTimer = setInterval(() => discoverLabels(false), 90000);
+}
+
+function cleanup(sendEos) {
+  if (!session) return;
+  if (discoveryTimer) { clearInterval(discoveryTimer); discoveryTimer = null; }
+  const s = session;
+  if (sendEos && s.ws.readyState === WebSocket.OPEN) {
+    try { s.ws.send(EOS); } catch {}
+    setTimeout(() => { try { s.ws.close(); } catch {} }, 1500);
+  } else {
+    try { s.ws.close(); } catch {}
+  }
+  try { s.node.disconnect(); } catch {}
+  try { s.audioCtx.close(); } catch {}
+  s.stream.getTracks().forEach(t => t.stop());
+  wave.running = false;
+  wave.attach(null);
+  $("waveWrap").classList.remove("on");
+  $("micBtn").classList.remove("rec");
+  $("micLabel").textContent = "录音";
+  session = null;
+}
+function finishStop() {
+  setStatus("已完成", false);
+  flushPending();
+  cleanup(false);
+  discoverLabels(true);   // 停止后对整段做一次终扫
+}
+
+$("micBtn").onclick = () => {
+  if (session) {
+    session.stopping = true;
+    setStatus("收尾中…", false);
+    cleanup(true);
+    setTimeout(() => { if (!session) setStatus("已停止", false); }, 1600);
+  } else {
+    startSession();
+  }
+};
+</script>
+</body>
+</html>
