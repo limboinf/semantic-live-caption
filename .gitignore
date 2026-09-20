@@ -3,6 +3,7 @@
 小红书素材.md
 xhs/
 *.png
+!docs/images/*.png
 
 # 历史部署文件（已被 web/ server/ 取代，仅根目录）
 /index.html
